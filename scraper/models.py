@@ -1,5 +1,7 @@
 from django.db import models
 
+from utils.validators import validate_formatted_phone
+
 
 class Car(models.Model):
     url = models.URLField(unique=True, db_index=True)
@@ -7,7 +9,10 @@ class Car(models.Model):
     price_usd = models.PositiveIntegerField()
     odometer = models.PositiveIntegerField()
     username = models.CharField(max_length=255)
-    phone_number = models.CharField(max_length=12)
+    phone_number = models.CharField(
+        max_length=12,
+        validators=[validate_formatted_phone]
+    )
     image_url = models.URLField()
     images_count = models.PositiveIntegerField()
     car_number = models.CharField(max_length=20, blank=True, null=True)
