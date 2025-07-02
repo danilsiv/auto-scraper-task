@@ -3,7 +3,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from scraper.models import Car
-
+from scraper.phone_scraper import get_phone_number_from_car_page
+from utils.helpers import format_phone_number
 
 START_URL = "https://auto.ria.com/uk/car/used/"
 
@@ -35,7 +36,7 @@ def parse_car_details(url: str, client: httpx.Client) -> dict:
                         .replace("грн", ""))
         odometer = int(soup.select_one("span.size18").get_text(strip=True) + "000")
         username = soup.select_one(".seller_info_name").get_text(strip=True)
-        phone_number = ...          # TODO: get_phone_number_from_car_page implementation
+        phone_number = format_phone_number(get_phone_number_from_car_page(url))
 
         image_tag = soup.select_one("div.photo-620x465 img")
         image_url = image_tag.get("src") if image_tag else ""
