@@ -24,3 +24,14 @@ class Car(models.Model):
 
     def __str__(self) -> str:
         return f"{self.title} ({self.price_usd} USD)"
+
+    def save(
+        self,
+        *args,
+        force_insert=False,
+        force_update=False,
+        using=None,
+        update_fields=None,
+    ):
+        self.full_clean()
+        return super().save(force_insert, force_update, using, update_fields)
