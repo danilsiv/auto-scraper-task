@@ -1,10 +1,11 @@
 import time
 import httpx
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 from scraper.models import Car
-from scraper.phone_scraper import get_phone_number_from_car_page
 from utils.helpers import format_phone_number
+
 
 START_URL = "https://auto.ria.com/uk/car/used/"
 
@@ -23,50 +24,86 @@ def get_car_urls_from_page(page: int, client: httpx.Client) -> list:
     return links
 
 
-def parse_car_details(url: str, client: httpx.Client) -> dict:
-    response = client.get(url)
-    soup = BeautifulSoup(response.content, "html.parser")
+def parse_car_details_with_browser(url: str) -> dict:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1920, "height": 1080})
 
-    try:
-        title = soup.select_one("h1.head").get_text(strip=True)
-        price_usd = int(soup.select_one(".price_value strong").get_text(strip=True)
-                        .replace(" ", "")
-                        .replace("$", "")
-                        .replace("€", "")
-                        .replace("грн", ""))
-        odometer = int(soup.select_one("span.size18").get_text(strip=True) + "000")
-        username = soup.select_one(".seller_info_name").get_text(strip=True)
-        phone_number = format_phone_number(get_phone_number_from_car_page(url))
+        try:
+            page.goto(url, timeout=30000)
 
-        image_tag = soup.select_one("div.photo-620x465 img")
-        image_url = image_tag.get("src") if image_tag else ""
+            page.evaluate("""
+                const banner = document.querySelector('.c-notifier-container');
+                if (banner) banner.remove();
+            """)
 
-        images_count = len(soup.select(".photo-74x56.loaded")) + 1
+            try:
+                page.click(".phone_show_link", timeout=20000)
+            except:
+                pass
 
-        car_number = None
-        car_number_tag = soup.select_one("span.state-num.ua")
-        if car_number_tag:
-            car_number = car_number_tag.get_text(strip=True).split("Ми розпізнали")[0].strip()
+            page.wait_for_selector(".popup-successful-call-desk", timeout=25000)
 
-        vin_tag = soup.select_one("span.label-vin")
-        car_vin = vin_tag.get_text(strip=True) if vin_tag else None
+            title = page.query_selector("h1.head").inner_text().strip()
+            price_usd = None
 
-        return {
-            "url": url,
-            "title": title,
-            "price_usd": price_usd,
-            "odometer": odometer,
-            "username": username,
-            "phone_number": phone_number,
-            "image_url": image_url,
-            "images_count": images_count,
-            "car_number": car_number,
-            "car_vin": car_vin,
-        }
+            main_price_block = page.query_selector(".price_value strong")
+            if main_price_block:
+                text = main_price_block.inner_text().strip()
+                price_usd = text if "$" in text else None
 
-    except Exception as a:
-        print(a)
-        return {}
+            if price_usd is None:
+                alt_price_blocks = page.query_selector_all('[data-currency="USD"]')
+                for block in alt_price_blocks:
+                    text = block.inner_text().strip()
+                    price_usd = text if text else None
+
+            if price_usd is None:
+                price_usd = 0
+            else:
+                price_usd = int("".join([let for let in price_usd if let.isdigit()]))
+
+            odometer_raw = page.query_selector("span.size18").inner_text().strip()
+            odometer = int(odometer_raw + "000") if odometer_raw.isdigit() else 0
+            username = page.query_selector(".seller_info_name").inner_text().strip()
+
+            phone_element = page.query_selector(".popup-successful-call-desk")
+            phone_number = format_phone_number(phone_element.inner_text().strip()) if phone_element else "error"
+
+            image_tag = page.query_selector("div.photo-620x465 img")
+            image_url = image_tag.get_attribute("src") if image_tag else ""
+
+            images_count = len(page.query_selector_all(".photo-74x56.loaded"))
+
+            car_number = None
+            car_number_tag = page.query_selector("span.state-num.ua")
+            if car_number_tag:
+                car_number_text = car_number_tag.inner_text().strip()
+                car_number = car_number_text.split("Ми розпізнали")[0].strip()
+
+            vin_tag = page.query_selector("span.label-vin")
+            car_vin = vin_tag.inner_text().strip() if vin_tag else None
+
+            return {
+                "url": url,
+                "title": title,
+                "price_usd": price_usd,
+                "odometer": odometer,
+                "username": username,
+                "phone_number": phone_number,
+                "image_url": image_url,
+                "images_count": images_count,
+                "car_number": car_number,
+                "car_vin": car_vin,
+            }
+
+        except Exception as e:
+            print(f"{url} worked with error:")
+            print(e)
+            return {}
+
+        finally:
+            browser.close()
 
 
 def main(start_page: int=1, stop_page: int=2) -> None:
@@ -79,7 +116,7 @@ def main(start_page: int=1, stop_page: int=2) -> None:
             print(f"Found {len(car_urls)} cars")
 
             for url in car_urls:
-                data = parse_car_details(url, client)
+                data = parse_car_details_with_browser(url)
                 if data:
                     all_cars.append(data)
 
