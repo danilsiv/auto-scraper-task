@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from scraper.autoria_scraper import main
+from scraper.dump_db import dump_data
 
 load_dotenv()
 
@@ -47,6 +48,9 @@ def main_loop():
         run_scraper()
         duration = time.perf_counter() - start
         print(f"Completed in {duration} seconds")
+
+        print("Dumping data...")
+        dump_data()
 
         time.sleep(60)
 
