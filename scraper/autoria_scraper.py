@@ -1,5 +1,3 @@
-import os
-import django
 import asyncio
 import time
 
@@ -7,10 +5,8 @@ from asgiref.sync import sync_to_async
 import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "scraper_core.settings")
-django.setup()
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from scraper.models import Car
 from utils.helpers import format_phone_number
@@ -28,36 +24,43 @@ async def get_car_urls_from_page(page: int, client: httpx.AsyncClient) -> list[s
     ]
 
 
-async def parse_car_details_with_browser(
-    url: str,
-    browser,
-    semaphore: asyncio.Semaphore
-) -> dict:
-    async with (semaphore):
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(PlaywrightTimeoutError),
+)
+async def safe_click(page, selector: str):
+    await page.click(selector, timeout=20_000)
+
+
+async def parse_car_details_with_browser(index: int, url: str, browser, semaphore: asyncio.Semaphore) -> dict:
+    if "/newauto/" in url:
+        return {}
+
+    async with semaphore:
+        await asyncio.sleep(1)
+
         page = await browser.new_page(viewport={"width": 1920, "height": 1080})
         try:
             await page.goto(url, timeout=30_000)
 
-            await page.evaluate("""
-                const b = document.querySelector('.c-notifier-container');
-                if (b) b.remove();
-            """)
+            await page.evaluate("""const b = document.querySelector('.c-notifier-container'); if (b) b.remove();""")
 
-            await page.click(".phone_show_link", timeout=20_000)
-            await page.locator(".popup-successful-call-desk").first.wait_for(state="visible", timeout=25_000)
+            if await page.locator(".phone_show_link").count():
+                await safe_click(page, ".phone_show_link")
+                await page.locator(".popup-successful-call-desk").first.wait_for(state="visible", timeout=25_000)
+            else:
+                print(f"phone_show_link not found: {url}")
 
-            title = ""
-            title_locator = page.locator("h1.head").first
-            if await title_locator.count():
-                title = (await title_locator.inner_text()).strip()
+            title = await page.locator("h1.head").first.inner_text() if await page.locator("h1.head").count() else ""
 
+            price_usd = 0
             price_text = None
-            main_block = page.locator(".price_value strong")
-            if await main_block.count():
-                txt = (await main_block.first.inner_text()).strip()
+            price_loc = page.locator(".price_value strong")
+            if await price_loc.count():
+                txt = (await price_loc.first.inner_text()).strip()
                 if "$" in txt:
                     price_text = txt
-
             if not price_text:
                 usd_blocks = await page.locator('[data-currency="USD"]').all()
                 for block in usd_blocks:
@@ -65,25 +68,24 @@ async def parse_car_details_with_browser(
                     if txt:
                         price_text = txt
                         break
-
-            price_usd = int("".join([el for el in price_text if el.isdigit()])) if price_text else 0
+            if price_text:
+                price_usd = int("".join([el for el in price_text if el.isdigit()]))
 
             odometer = 0
-            odo_locator = page.locator("section.main-info span.size18").first
-            odometer_raw = ""
+            odo_locator = page.locator("section.main-info span.size18")
             if await odo_locator.count():
-                odometer_raw = (await odo_locator.inner_text()).strip()
-            if odometer_raw.isdigit():
-                odometer = int(odometer_raw + "000")
+                odometer_raw = (await odo_locator.first.inner_text()).strip()
+                if odometer_raw.isdigit():
+                    odometer = int(odometer_raw + "000")
 
             username = ""
-            user_locator = page.locator(".seller_info_name").first
-            if await user_locator.count():
-                username = (await user_locator.inner_text()).strip()
+            if await page.locator(".seller_info_name").count():
+                username = (await page.locator(".seller_info_name").first.inner_text()).strip()
 
-            el = page.locator(".popup-successful-call-desk")
-            text = await el.first.text_content()
-            phone_number = format_phone_number(text.strip())
+            phone_number = ""
+            text = await page.locator(".popup-successful-call-desk").first.text_content()
+            if text:
+                phone_number = format_phone_number(text.strip())
 
             image_url = ""
             img = page.locator("div.photo-620x465 img")
@@ -103,6 +105,7 @@ async def parse_car_details_with_browser(
             if await vin_tag.count():
                 vin = (await vin_tag.first.inner_text()).strip()
 
+            print(f"{index + 1}. Processing {url} page")
 
             return {
                 "url": url,
@@ -118,6 +121,7 @@ async def parse_car_details_with_browser(
             }
 
         except Exception as e:
+            print(f"{url}: {e}")
             return {}
         finally:
             await page.close()
@@ -160,8 +164,8 @@ async def main(start_page: int = 1, stop_page: int = 3):
         print(f"Total URLs to parse: {len(all_urls)}")
 
         parse_tasks = [
-            parse_car_details_with_browser(u, browser, sem)
-            for u in all_urls
+            parse_car_details_with_browser(i, u, browser, sem)
+            for i, u in enumerate(all_urls)
         ]
         cars_data = await asyncio.gather(*parse_tasks)
 
@@ -179,14 +183,14 @@ async def main(start_page: int = 1, stop_page: int = 3):
             else:
                 updated_cars += 1
 
-        print(f"{created_cars} was created")
-        print(f"{updated_cars} was updated")
+        print(f"\n{created_cars} cars was created")
+        print(f"{updated_cars} cars was updated")
 
         await browser.close()
 
 
 if __name__ == "__main__":
     start = time.perf_counter()
-    asyncio.run(main(start_page=1, stop_page=2))
+    asyncio.run(main(start_page=1, stop_page=6))
     duration = time.perf_counter() - start
     print(f"Completed in {duration} seconds")
