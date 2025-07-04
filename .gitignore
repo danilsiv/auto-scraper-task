@@ -24,8 +24,8 @@ dist/
 .venv
 env/
 venv/
-.env.*
 # PyCharm project settings
 .idea/
 
 *.pub
+dumps/
