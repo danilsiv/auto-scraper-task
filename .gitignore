@@ -1,0 +1,31 @@
+# Git ignore for Python, Django, PyCharm
+# Basic exclusions
+
+# Python bytecode and cache
+*.pyc
+__pycache__/
+
+# Django specific files
+*.log
+*.pot
+**/local_settings.py
+**/db.sqlite3
+**/db.sqlite3-journal
+**/media/
+**/staticfiles/
+
+# Build and distribution directories
+build/
+dist/
+*.egg-info/
+
+# Virtual environment folders
+.env
+.venv
+env/
+venv/
+# PyCharm project settings
+.idea/
+
+*.pub
+dumps/
